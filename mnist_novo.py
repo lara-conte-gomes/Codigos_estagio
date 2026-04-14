@@ -14,7 +14,7 @@ NUM_CLASSES = 10
 
 
 def load_mnist() -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Load MNIST via TFDS and return JAX arrays."""
+    """Load MNIST from TFDS and return JAX arrays."""
     train_ds = tfds.load("mnist", split="train", as_supervised=True)
     test_ds = tfds.load("mnist", split="test", as_supervised=True)
 
@@ -23,7 +23,7 @@ def load_mnist() -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         labels = []
 
         for image, label in tfds.as_numpy(ds):
-            image = image.astype(np.float32) / 255.0  # normalize to [0, 1]
+            image = image.astype(np.float32) / 255.0
             images.append(image)
             labels.append(int(label))
 
@@ -48,13 +48,11 @@ def batch_iterator(
     while True:
         indices = rng.permutation(n)
         for start in range(0, n, batch_size):
-            batch_idx = indices[start : start + batch_size]
+            batch_idx = indices[start:start + batch_size]
             yield x[batch_idx], y[batch_idx]
 
 
 class CNN(nn.Module):
-    """CNN similar to the original tutorial architecture."""
-
     @nn.compact
     def __call__(self, x):
         x = nn.Conv(features=32, kernel_size=(8, 8), strides=(2, 2), padding="SAME")(x)
@@ -85,7 +83,7 @@ def accuracy_from_logits(logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarra
 
 
 def create_train_state(model: CNN, rng_key: jax.Array, learning_rate: float):
-    """Initialize model params and optimizer state."""
+    """Initialize model parameters and optimizer state."""
     dummy_input = jnp.ones((1, 28, 28, 1), dtype=jnp.float32)
     params = model.init(rng_key, dummy_input)["params"]
 
@@ -95,34 +93,8 @@ def create_train_state(model: CNN, rng_key: jax.Array, learning_rate: float):
     return params, optimizer, opt_state
 
 
-@jax.jit
-def train_step(model: CNN, params, optimizer, opt_state, x_batch, y_batch):
-    """Single optimization step."""
-
-    def loss_fn(current_params):
-        logits = model.apply({"params": current_params}, x_batch)
-        loss = cross_entropy_loss(logits, y_batch)
-        return loss, logits
-
-    (loss, logits), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    updates, new_opt_state = optimizer.update(grads, opt_state, params)
-    new_params = optax.apply_updates(params, updates)
-    acc = accuracy_from_logits(logits, y_batch)
-
-    return new_params, new_opt_state, loss, acc
-
-
-@jax.jit
-def eval_step(model: CNN, params, x, y):
-    logits = model.apply({"params": params}, x)
-    loss = cross_entropy_loss(logits, y)
-    acc = accuracy_from_logits(logits, y)
-    return loss, acc
-
-
 def fgsm_attack(model: CNN, params, x, y, eps: float):
-    """Fast Gradient Sign Method."""
-
+    """FGSM attack."""
     def loss_fn(x_in):
         logits = model.apply({"params": params}, x_in)
         return cross_entropy_loss(logits, y)
@@ -141,7 +113,7 @@ def pgd_attack(
     eps_iter: float = 0.01,
     nb_iter: int = 40,
 ):
-    """Projected Gradient Descent under L-infinity constraint."""
+    """PGD attack under L-infinity constraint."""
     x_orig = x
     x_adv = x
 
@@ -153,7 +125,6 @@ def pgd_attack(
         grad_x = jax.grad(loss_fn)(x_adv)
         x_adv = x_adv + eps_iter * jnp.sign(grad_x)
 
-        # Project back into the L_inf ball around the original input
         x_adv = jnp.clip(x_adv, x_orig - eps, x_orig + eps)
         x_adv = jnp.clip(x_adv, 0.0, 1.0)
 
@@ -162,12 +133,12 @@ def pgd_attack(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--nb_epochs", type=int, default=8, help="Number of epochs.")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size.")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
-    parser.add_argument("--eps", type=float, default=0.3, help="Total epsilon for FGSM/PGD.")
-    parser.add_argument("--pgd_eps_iter", type=float, default=0.01, help="PGD step size.")
-    parser.add_argument("--pgd_nb_iter", type=int, default=40, help="Number of PGD steps.")
+    parser.add_argument("--nb_epochs", type=int, default=8, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--eps", type=float, default=0.3, help="FGSM/PGD epsilon")
+    parser.add_argument("--pgd_eps_iter", type=float, default=0.01, help="PGD step size")
+    parser.add_argument("--pgd_nb_iter", type=int, default=40, help="PGD number of iterations")
     args = parser.parse_args()
 
     print("Loading MNIST...")
@@ -181,6 +152,26 @@ def main():
         learning_rate=args.learning_rate,
     )
 
+    @jax.jit
+    def train_step(params, opt_state, x_batch, y_batch):
+        def loss_fn(current_params):
+            logits = model.apply({"params": current_params}, x_batch)
+            loss = cross_entropy_loss(logits, y_batch)
+            return loss, logits
+
+        (loss, logits), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+        acc = accuracy_from_logits(logits, y_batch)
+        return new_params, new_opt_state, loss, acc
+
+    @jax.jit
+    def eval_step(params, x, y):
+        logits = model.apply({"params": params}, x)
+        loss = cross_entropy_loss(logits, y)
+        acc = accuracy_from_logits(logits, y)
+        return loss, acc
+
     rng = np.random.default_rng(seed=0)
     batches = batch_iterator(x_train, y_train, args.batch_size, rng)
     num_batches = int(np.ceil(x_train.shape[0] / args.batch_size))
@@ -193,19 +184,15 @@ def main():
 
         for _ in range(num_batches):
             x_batch, y_batch = next(batches)
-            params, opt_state, loss, acc = train_step(
-                model, params, optimizer, opt_state, x_batch, y_batch
-            )
+            params, opt_state, loss, acc = train_step(params, opt_state, x_batch, y_batch)
             epoch_losses.append(loss)
             epoch_accs.append(acc)
 
         epoch_time = time.time() - start_time
 
-        # Clean evaluation
-        _, train_acc = eval_step(model, params, x_train, y_train)
-        _, test_acc = eval_step(model, params, x_test, y_test)
+        _, train_acc = eval_step(params, x_train, y_train)
+        _, test_acc = eval_step(params, x_test, y_test)
 
-        # Adversarial evaluation
         x_test_fgm = fgsm_attack(model, params, x_test, y_test, args.eps)
         x_test_pgd = pgd_attack(
             model,
@@ -217,8 +204,8 @@ def main():
             nb_iter=args.pgd_nb_iter,
         )
 
-        _, test_acc_fgm = eval_step(model, params, x_test_fgm, y_test)
-        _, test_acc_pgd = eval_step(model, params, x_test_pgd, y_test)
+        _, test_acc_fgm = eval_step(params, x_test_fgm, y_test)
+        _, test_acc_pgd = eval_step(params, x_test_pgd, y_test)
 
         print(f"Epoch {epoch + 1} in {epoch_time:.2f} sec")
         print(f"Train minibatch loss (mean): {jnp.mean(jnp.array(epoch_losses)):.4f}")
